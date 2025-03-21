@@ -26,6 +26,12 @@ class Config:
         "commit_message": os.getenv("GIT_COMMIT_MESSAGE", "Update from context manager"),
     }
     
+    # LLM provider configuration
+    API_KEYS = {
+        "openai": None, 
+        "anthropic": None,
+    }
+
     def __init__(self):
         # Create directories if they don't exist
         for path in self.PATHS.values():

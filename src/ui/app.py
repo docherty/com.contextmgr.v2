@@ -1,15 +1,38 @@
 import streamlit as st
 import asyncio
-from src.core.planner import ProjectPlanner
-from src.storage.vector_store import ContextVectorStore
+import sys
+import os
+from pathlib import Path
 
-# Initialize components
-planner = ProjectPlanner()
-vector_store = ContextVectorStore()
+# Add the project root to the Python path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Import config early to avoid import issues
+from src.config import config
+
+# Lazy initialization for components
+_planner = None
+_vector_store = None
+
+def get_planner():
+    """Lazily initialize the planner only when needed"""
+    global _planner
+    if _planner is None:
+        from src.core.planner import ProjectPlanner
+        _planner = ProjectPlanner()
+    return _planner
+
+def get_vector_store():
+    """Lazily initialize the vector store only when needed"""
+    global _vector_store
+    if _vector_store is None:
+        from src.storage.vector_store import ContextVectorStore
+        _vector_store = ContextVectorStore()
+    return _vector_store
 
 # Set up the Streamlit page
 st.set_page_config(
-    page_title="AI Context Manager",
+    page_title="ContextMgr",
     page_icon="🧠",
     layout="wide"
 )
@@ -19,6 +42,14 @@ st.title("AI Context Manager")
 # Sidebar for navigation
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", ["Project Planning", "Context Search", "Settings"])
+
+# Function to safely run async functions in Streamlit
+def run_async(async_func, *args, **kwargs):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(async_func(*args, **kwargs))
+    loop.close()
+    return result
 
 if page == "Project Planning":
     st.header("Generate Development Plan")
@@ -33,10 +64,12 @@ if page == "Project Planning":
         
         if submitted and project_description:
             with st.spinner("Generating plan..."):
-                # Run the async function in a non-async context
-                loop = asyncio.new_event_loop()
-                plan_result = loop.run_until_complete(planner.generate_plan(project_description))
-                loop.close()
+                # Initialize components only when needed
+                planner = get_planner()
+                vector_store = get_vector_store()
+                
+                # Use the safe async runner
+                plan_result = run_async(planner.generate_plan, project_description)
                 
                 st.success("Plan generated!")
                 
@@ -44,12 +77,10 @@ if page == "Project Planning":
                 st.markdown(plan_result["plan"])
                 
                 # Save to context
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(vector_store.add_context(
+                run_async(vector_store.add_context, 
                     plan_result["plan"],
                     {"type": "plan", "path": plan_result["path"]}
-                ))
-                loop.close()
+                )
 
 elif page == "Context Search":
     st.header("Search Development Context")
@@ -58,10 +89,11 @@ elif page == "Context Search":
     
     if query:
         with st.spinner("Searching..."):
+            # Initialize vector store only when needed
+            vector_store = get_vector_store()
+            
             # Search the vector store
-            loop = asyncio.new_event_loop()
-            results = loop.run_until_complete(vector_store.search_context(query))
-            loop.close()
+            results = run_async(vector_store.search_context, query)
             
             # Display results
             for i, doc in enumerate(results):
@@ -93,6 +125,6 @@ elif page == "Settings":
         index=0
     )
     
-    # Placeholder for future settings
+    # Update to show Chroma DB location
     st.subheader("Storage Settings")
-    st.text("SQLite database location: " + str(config.PATHS["vector_store"] / "context.db"))
+    st.text("Chroma database location: " + str(config.PATHS["vector_store"] / "chroma_db"))

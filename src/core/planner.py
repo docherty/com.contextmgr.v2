@@ -31,16 +31,18 @@ class ProjectPlanner:
         - [ ] Task 2
         """
         
-        response = await self.model_router.execute_prompt("planner", prompt)
+        # Changed from execute_prompt to generate_response
+        response = await self.model_router.generate_response("planner", prompt)
         
         # Save plan to file
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         plan_path = config.PATHS["plans"] / f"plan-{timestamp}.md"
         
+        # Adjust the response handling as generate_response returns a string, not an object
         with open(plan_path, "w") as f:
-            f.write(response.content)
+            f.write(response)
         
         return {
-            "plan": response.content,
+            "plan": response,
             "path": str(plan_path)
         }
