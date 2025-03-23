@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 from src.config import config
 from src.models.router import ModelRouter
@@ -10,7 +11,7 @@ class ProjectPlanner:
     async def generate_clarification_questions(self, project_description: str):
         """Generate clarification questions based on the initial project description"""
         prompt = f"""
-        Based on the following initial project description, generate 3-5 important 
+        Based on the following initial project description, generate a maximum of 5 important 
         clarification questions that would help refine the requirements. Format 
         each question as a JSON object with "id", "question", "type" (one of: "yes_no", 
         "multiple_choice", "text"), and for multiple_choice questions include an "options" array.
@@ -27,14 +28,19 @@ class ProjectPlanner:
                 "options": ["Web", "Mobile", "Desktop", "All platforms"]
             }},
             {{
-                "id": "timeline",
-                "question": "Do you have a specific deadline for this project?",
-                "type": "yes_no"
+                "id": "technology_preference",
+                "question": "Which technology do you prefer?",
+                "options": ["Javascript", "Python", "No preference"]
             }},
             {{
-                "id": "budget",
-                "question": "What is your approximate budget for this project?",
+                "id": "project_name",
+                "question": "What do you want to call the project?",
                 "type": "text"
+            }},
+            {{
+                "id": "project_scope",
+                "question": "Do you want to support VR devices?",
+                "type": "yes_no"
             }}
         ]
         
@@ -172,3 +178,43 @@ class ProjectPlanner:
         except json.JSONDecodeError:
             # Fallback for parsing errors
             return {"overview": "Error parsing plan", "work_packages": [], "plan": response}
+    
+    def parse_markdown_plan(self, markdown_content: str):
+        """Parse a markdown plan file back into the structured format"""
+        # Extract overview section (everything between # Development Plan and # Work Packages)
+        overview_match = re.search(r'# Development Plan\s+(.*?)\s+# Work Packages', 
+                                  markdown_content, re.DOTALL)
+        overview = overview_match.group(1).strip() if overview_match else ""
+        
+        # Extract work packages
+        work_packages = []
+        
+        # Find all work package sections
+        wp_sections = re.findall(r'## WP\d+: (.*?)(?=## WP\d+:|$)', markdown_content + "\n## WP999:", re.DOTALL)
+        
+        for wp_section in wp_sections:
+            lines = wp_section.strip().split('\n')
+            if not lines:
+                continue
+                
+            title = lines[0].strip()
+            tasks = []
+            
+            # Extract tasks
+            for line in lines[1:]:
+                task_match = re.search(r'- \[ \] WP\d+-[A-Z]: (.*)', line)
+                if task_match:
+                    tasks.append(task_match.group(1))
+            
+            work_packages.append({
+                "title": title,
+                "tasks": tasks
+            })
+        
+        # Return in the same format as generate_plan
+        return {
+            "overview": overview,
+            "work_packages": work_packages,
+            "plan": markdown_content,
+            "path": ""  # Will be filled in from history if available
+        }

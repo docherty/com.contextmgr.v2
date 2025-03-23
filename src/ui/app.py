@@ -2,7 +2,11 @@ import streamlit as st
 import asyncio
 import sys
 import os
+import json
 from pathlib import Path
+
+from src.ui.components.development_plan import display_work_packages
+from src.ui.components.styling import add_custom_css
 
 # Add the project root to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -37,11 +41,96 @@ st.set_page_config(
     layout="wide"
 )
 
+add_custom_css()
+
+# Initialize project history in session state if not exists
+if "project_history" not in st.session_state:
+    # Try to load from file if exists
+    history_file = config.PATHS["data"] / "project_history.json"
+    if history_file.exists():
+        try:
+            with open(history_file, "r") as f:
+                st.session_state.project_history = json.load(f)
+        except:
+            st.session_state.project_history = []
+    else:
+        st.session_state.project_history = []
+
+if "current_project_id" not in st.session_state:
+    st.session_state.current_project_id = None
+
+# Function to save project history
+def save_project_history():
+    history_file = config.PATHS["data"] / "project_history.json"
+    with open(history_file, "w") as f:
+        json.dump(st.session_state.project_history, f)
+
+# Function to add project to history
+def add_project_to_history(project_name, plan_path, brief):
+    import uuid
+    project_id = str(uuid.uuid4())
+    project = {
+        "id": project_id,
+        "name": project_name,
+        "plan_path": plan_path,
+        "brief": brief,
+        "created_at": str(Path(plan_path).name).replace("plan-", "").replace(".md", "")
+    }
+    st.session_state.project_history.append(project)
+    st.session_state.current_project_id = project_id
+    save_project_history()
+    return project_id
+
+# Function to load project data
+def load_project_data(project_id):
+    for project in st.session_state.project_history:
+        if project["id"] == project_id:
+            # Load plan data
+            plan_path = project["plan_path"]
+            try:
+                with open(plan_path, "r") as f:
+                    plan_content = f.read()
+                    
+                # Set session state for the loaded project
+                st.session_state.workflow_step = 4  # Go directly to work packages view
+                st.session_state.refined_brief = project["brief"]
+                
+                # Parse the plan content to recreate work_packages structure
+                planner = get_planner()
+                plan_data = planner.parse_markdown_plan(plan_content)
+                st.session_state.work_packages = plan_data
+                st.session_state.current_project_id = project_id
+                
+                return True
+            except Exception as e:
+                st.error(f"Failed to load project: {str(e)}")
+                return False
+    return False
+
 st.title("ContextMgr")
 
-# Sidebar for navigation
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Project Planning", "Context Search", "Settings"])
+# Sidebar with project history
+with st.sidebar:
+    st.title("Projects")
+    
+    # Project history section (scrollable)
+    st.subheader("Project History")
+    
+    # Create a container for the scrolling list
+    history_container = st.container()
+    with history_container:
+        for project in st.session_state.project_history:
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                if st.button(f"{project['name']}", key=f"proj_{project['id']}"):
+                    load_project_data(project['id'])
+            with col2:
+                st.caption(project['created_at'][0:8])
+    
+    # Navigation panel at the bottom (sticky)
+    st.markdown("---")
+    st.subheader("Navigation")
+    page = st.radio("Go to", ["Project Planning", "Context Search", "Settings"])
 
 # Function to safely run async functions in Streamlit
 def run_async(async_func, *args, **kwargs):
@@ -111,6 +200,21 @@ def process_work_packages():
     st.session_state.workflow_step = 4
     st.session_state.loading_state = False
     
+    # Add project to history
+    # Extract project name from the brief or use a default
+    brief_lines = st.session_state.refined_brief.strip().split('\n')
+    project_name = "Untitled Project"
+    for line in brief_lines:
+        if line.strip() and not line.startswith('#'):
+            project_name = line.strip()[:40]
+            break
+    
+    add_project_to_history(
+        project_name,
+        plan_result.get("path", ""),
+        st.session_state.refined_brief
+    )
+    
 def reset_workflow():
     st.session_state.workflow_step = 1
     st.session_state.project_description = ""
@@ -119,6 +223,7 @@ def reset_workflow():
     st.session_state.refined_brief = ""
     st.session_state.work_packages = []
     st.session_state.loading_state = False
+    st.session_state.current_project_id = None
 
 # Process any loading state actions
 if st.session_state.loading_state:
@@ -236,7 +341,7 @@ if page == "Project Planning":
                     st.session_state.refined_brief = refined_brief
                     go_to_work_packages()
         
-        # Step 4: Work packages and tasks
+        # Step 4: Work packages and tasks with drag and drop
         elif st.session_state.workflow_step == 4:
             st.header("Development Plan")
             
@@ -244,7 +349,7 @@ if page == "Project Planning":
             if st.session_state.work_packages:
                 # Save to context
                 vector_store = get_vector_store()
-                if "path" in st.session_state.work_packages:
+                if "path" in st.session_state.work_packages and st.session_state.work_packages["path"]:
                     run_async(vector_store.add_context, 
                         st.session_state.work_packages["plan"],
                         {"type": "plan", "path": st.session_state.work_packages["path"]}
@@ -255,93 +360,28 @@ if page == "Project Planning":
                 with tabs[0]:
                     st.markdown(st.session_state.work_packages["overview"])
                 
+                # Inside your tabs[1] section (assuming work packages is the second tab)
                 with tabs[1]:
-                    # Display editable work packages
-                    for i, wp in enumerate(st.session_state.work_packages["work_packages"]):
-                        with st.expander(f"WP{i+1:03d}: {wp['title']}", expanded=True):
-                            # Edit work package title
-                            new_title = st.text_input(
-                                "Work Package Title", 
-                                value=wp["title"], 
-                                key=f"wp_title_{i}"
-                            )
-                            st.session_state.work_packages["work_packages"][i]["title"] = new_title
-                            
-                            # Add up/down buttons for reordering
-                            col1, col2, col3 = st.columns([1, 1, 8])
-                            if i > 0 and col1.button("↑", key=f"up_{i}"):
-                                # Move work package up
-                                wp_item = st.session_state.work_packages["work_packages"].pop(i)
-                                st.session_state.work_packages["work_packages"].insert(i-1, wp_item)
-                                st.rerun()
-                            
-                            if i < len(st.session_state.work_packages["work_packages"])-1 and col2.button("↓", key=f"down_{i}"):
-                                # Move work package down
-                                wp_item = st.session_state.work_packages["work_packages"].pop(i)
-                                st.session_state.work_packages["work_packages"].insert(i+1, wp_item)
-                                st.rerun()
-                            
-                            # Tasks for this work package
-                            st.markdown("#### Tasks:")
-                            for j, task in enumerate(wp["tasks"]):
-                                task_col1, task_col2, task_col3, task_col4 = st.columns([1, 1, 10, 1])
-                                
-                                # Task ID
-                                task_col1.text(f"WP{i+1:03d}-{chr(65+j)}")
-                                
-                                # Up/down for task
-                                if j > 0 and task_col2.button("↑", key=f"t_up_{i}_{j}"):
-                                    t_item = st.session_state.work_packages["work_packages"][i]["tasks"].pop(j)
-                                    st.session_state.work_packages["work_packages"][i]["tasks"].insert(j-1, t_item)
-                                    st.rerun()
-                                
-                                if j < len(wp["tasks"])-1 and task_col2.button("↓", key=f"t_down_{i}_{j}"):
-                                    t_item = st.session_state.work_packages["work_packages"][i]["tasks"].pop(j)
-                                    st.session_state.work_packages["work_packages"][i]["tasks"].insert(j+1, t_item)
-                                    st.rerun()
-                                
-                                # Edit task description
-                                new_task = task_col3.text_input(
-                                    "", 
-                                    value=task, 
-                                    label_visibility="collapsed",
-                                    key=f"task_{i}_{j}"
-                                )
-                                st.session_state.work_packages["work_packages"][i]["tasks"][j] = new_task
-                                
-                                # Delete button for task
-                                if task_col4.button("❌", key=f"del_task_{i}_{j}"):
-                                    st.session_state.work_packages["work_packages"][i]["tasks"].pop(j)
-                                    st.rerun()
-                            
-                            # Add new task button
-                            if st.button("+ Add Task", key=f"add_task_{i}"):
-                                st.session_state.work_packages["work_packages"][i]["tasks"].append("New task")
-                                st.rerun()
+                    display_work_packages()
                     
-                    # Add new work package button
-                    if st.button("+ Add Work Package"):
-                        st.session_state.work_packages["work_packages"].append({
-                            "title": "New Work Package",
-                            "tasks": ["Task 1"]
-                        })
-                        st.rerun()
-                    
+                    # Add export and new project buttons if needed
                     col1, col2 = st.columns(2)
                     with col1:
-                        # Export plan button
                         if st.download_button(
                             "Export Plan", 
-                            data=st.session_state.work_packages["plan"],
+                            data=st.session_state.work_packages.get("plan", ""),
                             file_name="development_plan.md",
                             mime="text/markdown"
                         ):
                             pass
                     
                     with col2:
-                        # Start new project button
+                        # Adjust this to match your actual reset function name
                         if st.button("Start New Project"):
-                            reset_workflow()
+                            if "reset_workflow" in locals() or "reset_workflow" in globals():
+                                reset_workflow()
+                            else:
+                                st.warning("Reset function not found")
             
             # Option to go back and edit the brief
             st.button("Back to Brief", type="secondary", on_click=lambda: setattr(st.session_state, 'workflow_step', 3))
@@ -392,3 +432,56 @@ elif page == "Settings":
     # Update to show Chroma DB location
     st.subheader("Storage Settings")
     st.text("Chroma database location: " + str(config.PATHS["vector_store"] / "chroma_db"))
+    
+    # Management options
+    st.subheader("Management")
+    if st.button("Clear Project History"):
+        st.session_state.project_history = []
+        save_project_history()
+        st.success("Project history cleared")
+        st.rerun()
+
+# Handle message passing from JavaScript
+if st.session_state.workflow_step == 4:
+    # Listen for reorder events using components.html
+    st.components.v1.html("""
+<script>
+    // Listen for messages from parent
+    window.addEventListener('message', function(event) {
+        const data = event.data;
+        
+        if (data.type === 'reorderWorkPackages') {
+            // Send to Streamlit
+            window.parent.Streamlit.setComponentValue({
+                type: 'reorderWorkPackages',
+                order: data.order
+            });
+        } 
+        else if (data.type === 'moveTask') {
+            // Send to Streamlit
+            window.parent.Streamlit.setComponentValue({
+                type: 'moveTask',
+                sourceWpId: data.sourceWpId,
+                targetWpId: data.targetWpId,
+                taskOrder: data.taskOrder,
+                taskId: data.taskId
+            });
+        }
+        else if (data.type === 'deleteWorkPackage') {
+            // Send to Streamlit
+            window.parent.Streamlit.setComponentValue({
+                type: 'deleteWorkPackage',
+                wpId: data.wpId
+            });
+        }
+        else if (data.type === 'deleteTask') {
+            // Send to Streamlit
+            window.parent.Streamlit.setComponentValue({
+                type: 'deleteTask',
+                wpId: data.wpId,
+                taskId: data.taskId
+            });
+        }
+    });
+</script>
+""", height=0)

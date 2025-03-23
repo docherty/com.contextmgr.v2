@@ -18,6 +18,7 @@ class Config:
         "plans": BASE_DIR / "data" / "plans",
         "context": BASE_DIR / "data" / "context",
         "vector_store": BASE_DIR / "data" / "vectors",
+        "data": BASE_DIR / "data",
     }
     
     # Git configuration
